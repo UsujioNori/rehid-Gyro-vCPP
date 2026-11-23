@@ -12,6 +12,8 @@ struct AccelerometerCalibration {
 
 class Accelerometer {
 public:
+    Accelerometer() { LightLock_Init(&m_remoteLock); }
+    void SetRemoteSample(AccelerometerEntry sample);
     void Initialize();
     void Sampling();
     void SetAccelerometerRing(AccelerometerRing *ring) {
@@ -32,6 +34,9 @@ public:
     void DisableAndDecreementRef();
     void CalibrateVals(AccelerometerEntry *raw, AccelerometerEntry *final);
 private:
+    LightLock m_remoteLock;
+    AccelerometerEntry m_remoteSample {};
+    uint64_t m_remoteTime = 0;
     AccelerometerRing *m_ring = nullptr;
     AccelerometerCalibration m_calib;
     Handle m_event;

@@ -22,6 +22,7 @@ SOURCES		:=	source source/mock source/rings source/services
 DATA		:=	data
 INCLUDES	:=	include
 TITLE		:=	0004013000001D02
+CXI = $(TOPDIR)/$(TITLE).cxi
 
 #---------------------------------------------------------------------------------
 # options for code generation
@@ -40,6 +41,20 @@ endif
 
 ifdef DISABLE_CPAD
 CFLAGS	+=	-DDISABLE_CPAD=1
+endif
+
+ifdef ENABLE_EXTERNAL_CCP
+CFLAGS += -DENABLE_EXTERNAL_CCP=1
+endif
+
+ifeq ($(TEST_EXTEND_PAD_PRESSES),1)
+CFLAGS += -DTEST_EXTEND_PAD_PRESSES=1
+endif
+
+ifeq ($(TEST_CPP_8MS_REPORTS),1)
+CFLAGS += -DTEST_CPP_REPORT_PAD_SAMPLES=2
+else ifeq ($(TEST_CPP_12MS_REPORTS),1)
+CFLAGS += -DTEST_CPP_REPORT_PAD_SAMPLES=3
 endif
 
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=c++20
@@ -114,7 +129,7 @@ $(BUILD):
 #---------------------------------------------------------------------------------
 clean:
 	@echo clean ...
-	@rm -fr $(BUILD) $(OUTPUT).cxi $(TARGET).elf $(TOPDIR)/$(TITLE)
+	@rm -fr $(BUILD) $(OUTPUT).elf $(CXI) $(TOPDIR)/$(TITLE)
 
 
 #---------------------------------------------------------------------------------
@@ -125,9 +140,9 @@ DEPENDS	:=	$(OFILES:.o=.d)
 #---------------------------------------------------------------------------------
 # main targets
 #---------------------------------------------------------------------------------
-$(TOPDIR)/$(TITLE).cxi	: $(OUTPUT).elf
-	@makerom -f ncch -rsf ../rehid.rsf -o $@ -elf $<
-	@echo "Built $(TITLE).cxi"
+$(CXI) : $(OUTPUT).elf
+	@makerom -f ncch -rsf "$(TOPDIR)/rehid.rsf" -o "$@" -elf "$<"
+	@echo "Built $@"
 
 $(OUTPUT).elf	:	$(OFILES)
 

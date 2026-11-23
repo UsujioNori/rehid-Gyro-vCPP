@@ -31,6 +31,8 @@ struct GyroscopeCalibrateParam {
 
 class Gyroscope {
 public:
+    Gyroscope() { LightLock_Init(&m_remoteLock); }
+    void SetRemoteSample(GyroscopeEntry sample);
     void Initialize();
     void Sampling();
     void SetGyroscopeRing(GyroscopeRing *ring) {
@@ -68,6 +70,9 @@ public:
     uint64_t timeenable;
     uint8_t m_issetupdone = 0;
 private:
+    LightLock m_remoteLock;
+    GyroscopeEntry m_remoteSample {};
+    uint64_t m_remoteTime = 0;
     Result InternalInit();
     void SetSamplingRate(uint8_t samplingrate);
     void InternalSetup();

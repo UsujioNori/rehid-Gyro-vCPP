@@ -1,5 +1,8 @@
 #include "Accelerometer.hpp"
 #include "services/mcuhid.hpp"
+#include <atomic>
+
+std::atomic<uint32_t> diag_accel_remote_written {0};
 
 void Accelerometer::Initialize() {
     AccelerometerCalibration calib;
@@ -97,6 +100,13 @@ void Accelerometer::CalibrateVals(AccelerometerEntry *raw, AccelerometerEntry *f
 
 }
 
+void Accelerometer::SetRemoteSample(AccelerometerEntry sample) {
+    LightLock_Lock(&m_remoteLock);
+    m_remoteSample = sample;
+    m_remoteTime = osGetTime();
+    LightLock_Unlock(&m_remoteLock);
+}
+
 void Accelerometer::Sampling() {
     AccelerometerEntry rawvals;
 
@@ -105,6 +115,30 @@ void Accelerometer::Sampling() {
         Result ret = mcuHidGetEventReason(&reason);
 
         if (R_SUCCEEDED(ret) && (reason & 0x1000) != 0) {
+            LightLock_Lock(&m_remoteLock);
+            const bool remote = m_remoteTime && osGetTime() - m_remoteTime <= 250;
+            const AccelerometerEntry motion = m_remoteSample;
+            LightLock_Unlock(&m_remoteLock);
+
+            if (remote) {
+                const auto inverse = [](int value, int scale, int offset) -> int16_t {
+                    const int raw = value * scale / 512 + offset;
+                    if (raw < -32768) return -32768;
+                    if (raw > 32767) return 32767;
+                    return raw;
+                };
+                rawvals = {
+                    inverse(-motion.x, m_calib.scalex, m_calib.offsetx),
+                    inverse(-motion.z, m_calib.scaley, m_calib.offsety),
+                    inverse(motion.y, m_calib.scalez, m_calib.offsetz)
+                };
+                m_ring->SetRaw(rawvals);
+                m_ring->WriteToRing(motion);
+                svcSignalEvent(m_event);
+                diag_accel_remote_written.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+
             ret = mcuHidReadAccelerometerValues(&rawvals);
 
             if (R_SUCCEEDED(ret)) {

@@ -2,6 +2,23 @@
 #include "services/mcuhid.hpp"
 #include <cstdio>
 
+volatile uint32_t diag_ir_require_commands = 0;
+volatile uint32_t diag_ir_disconnect_commands = 0;
+volatile uint32_t diag_ir_disconnect_successes = 0;
+volatile uint32_t diag_ir_disconnect_redundant = 0;
+volatile uint32_t diag_ir_disconnect_queue_last = 0;
+volatile uint32_t diag_ir_disconnect_queue_max = 0;
+
+#ifdef ENABLE_EXTERNAL_CCP
+uint32_t diag_cpp_ipc_packets = 0;
+uint32_t diag_cpp_ipc_active_packets = 0;
+uint32_t diag_cpp_ipc_last_active = 0;
+#endif
+
+volatile IRCommandDiagnostic diag_ir_command_history[16] = {};
+volatile uint32_t diag_ir_command_history_next = 0;
+volatile uint32_t diag_ir_command_history_count = 0;
+
 extern char buf[100];
 
 namespace IPC {
@@ -185,7 +202,33 @@ void HandleHidCommands(Hid *hid) {
             break;
         }
 
-        case 0x19: { // Special rehid IPC command
+
+        case 0x19: {
+            #ifdef ENABLE_EXTERNAL_CCP
+            if (((cmdbuf[0] >> 6) & 0x3F) >= 1) {
+                const uint32_t input = cmdbuf[1];
+                hid->GetCPPO3DSObject()->SetExternalInput(input);
+                ++diag_cpp_ipc_packets;
+                // Compare the axes and ZL/ZR, ignoring reserved bits.
+                if ((input & 0xFFFF0600) != 0x80800000) {
+                    ++diag_cpp_ipc_active_packets;
+                    diag_cpp_ipc_last_active = input;
+                }
+            }
+            #endif
+            if (cmdbuf[0] == 0x1900C0 || cmdbuf[0] == 0x190140) {
+                const auto unpack = [](uint32_t value) {
+                    return static_cast<int16_t>(value & 0xFFFF);
+                };
+                hid->GetGyroscope()->SetRemoteSample({
+                    unpack(cmdbuf[2]), unpack(cmdbuf[2] >> 16), unpack(cmdbuf[3])
+                });
+                if (cmdbuf[0] == 0x190140) {
+                    hid->GetAccelerometer()->SetRemoteSample({
+                        unpack(cmdbuf[4]), unpack(cmdbuf[4] >> 16), unpack(cmdbuf[5])
+                    });
+                }
+            }
             cmdbuf[0] = 0x190040;
             cmdbuf[1] = 0;
             break;
@@ -202,11 +245,24 @@ void HandleMockIRUserCommands(Hid *hid) {
     uint32_t *cmdbuf = getThreadCommandBuffer();
     uint16_t cmdid = cmdbuf[0] >> 16;
 
+    uint32_t diagnostic_detail = cmdbuf[1];
+
+    if (cmdid == 0xD || cmdid == 0xE) {
+        uint32_t payload_size = cmdid == 0xD
+            ? (cmdbuf[2] >> 14)
+            : (cmdbuf[2] >> 4);
+        const uint8_t *payload = (const uint8_t *)cmdbuf[3];
+
+        diagnostic_detail =
+            (payload != nullptr && payload_size > 0)
+                ? payload[0]
+                : 0xFFFFFFFF;
+    }
+
     // sprintf(buf, "New cmid type : %X\n", cmdid);
     // svcOutputDebugString(buf, strlen(buf));
 
     IRUserMock *mock = hid->GetCPPO3DSObject()->GetMockIRUSERCommands();
-
     switch (cmdid) {
         case 0x1: // InitializeIrnop
         case 0x18: { // InitializeIrnopShared
@@ -234,14 +290,30 @@ void HandleMockIRUserCommands(Hid *hid) {
         }
 
         case 0x6: { // RequireConnection
+            diag_ir_require_commands++;
             cmdbuf[0] = 0x60040;
             cmdbuf[1] = mock->RequireConnection((uint8_t)(cmdbuf[1] & 0xFF));
             break;
         }
 
         case 0x9: { // Disconnect
+            diag_ir_disconnect_commands++;
             cmdbuf[0] = 0x90040;
-            cmdbuf[1] = mock->Disconnect();
+            Result disconnect_result = mock->Disconnect();
+
+            if (disconnect_result == 0) {
+                diag_ir_disconnect_successes++;
+
+                uint32_t queued = mock->GetReceivePacketCount();
+                diag_ir_disconnect_queue_last = queued;
+
+                if (queued > diag_ir_disconnect_queue_max)
+                    diag_ir_disconnect_queue_max = queued;
+            }
+            else if (disconnect_result == 0xC8A10C0D)
+                diag_ir_disconnect_redundant++;
+
+            cmdbuf[1] = disconnect_result;
             break;
         }
 
@@ -300,6 +372,32 @@ void HandleMockIRUserCommands(Hid *hid) {
             break;
         }
     }
+        const bool keep_history =
+            cmdid == 0x1  ||
+            cmdid == 0x2  ||
+            cmdid == 0x3  ||
+            cmdid == 0x6  ||
+            cmdid == 0x9  ||
+            cmdid == 0xA  ||
+            cmdid == 0xB  ||
+            cmdid == 0xC  ||
+            cmdid == 0x18 ||
+            cmdid == 0xE  ||
+            (cmdid == 0xD && diagnostic_detail != 1);
+
+        if (keep_history) {
+            uint32_t slot = diag_ir_command_history_next;
+
+            diag_ir_command_history[slot].tick = svcGetSystemTick();
+            diag_ir_command_history[slot].command = cmdid;
+            diag_ir_command_history[slot].detail = diagnostic_detail;
+            diag_ir_command_history[slot].result = cmdbuf[1];
+
+            diag_ir_command_history_next = (slot + 1) & 15;
+
+            if (diag_ir_command_history_count < 16)
+                diag_ir_command_history_count++;
+        }
 }
 
 } // End of namespace IPC

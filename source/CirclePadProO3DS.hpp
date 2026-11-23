@@ -1,3 +1,4 @@
+
 #pragma once
 #include <3ds.h>
 #include "CPPDefs.hpp"
@@ -13,6 +14,8 @@ enum {
     SAR_EXIT = -1,
     SAR_READERROR = -2,
     SAR_TIMEOUT = -3,
+    SAR_SENDERROR = -4,
+    SAR_WAITERROR = -5,
 };
 
 constexpr size_t CPP_SHARED_MEM_SIZE = 0x1000;
@@ -25,7 +28,18 @@ constexpr uint64_t MILLIS = 1000000;
 
 class CPPO3DS : public IR {
 public:
+    #ifdef ENABLE_EXTERNAL_CCP
+    CPPO3DS() {
+        LightLock_Init(&m_sleeplock);
+        LightLock_Init(&m_externalinputlock);
+    }
+    #endif
+
     Result Initialize() override;
+
+    #ifdef ENABLE_EXTERNAL_CCP
+    void SetExternalInput(uint32_t input);
+    #endif
 
     uint8_t IsInitialized() override {
         return m_initialized;
@@ -51,6 +65,25 @@ public:
 
     virtual void SetEnteringSleep(uint8_t val) override {
         m_sleep = val;
+
+        #ifdef ENABLE_EXTERNAL_CCP
+        if (m_sleep) {
+            LightLock_Lock(&m_externalinputlock);
+            m_latestkeys = 0;
+            m_latestentry = {0x800, 0x800};
+            LightLock_Unlock(&m_externalinputlock);
+        } else {
+            m_ring.Reset();
+
+            LightLock_Lock(&m_externalinputlock);
+            m_latestkeys = 0;
+            m_latestentry = {0x800, 0x800};
+            LightLock_Unlock(&m_externalinputlock);
+
+            m_oldkeys = 0;
+            m_cppstate = {};
+        }
+        #else
         if (m_sleep) {
             svcSignalEvent(*GetExitEvent());
             MyThread_Join(&m_thread, 1000 * MILLIS);
@@ -59,8 +92,9 @@ public:
             m_latestkeys = 0;
             m_cppstate = {};
             MCUHWC_SetPowerLedState(LED_OFF);
-            CreateThread(); 
+            CreateThread();
         }
+        #endif
 
         m_mock.DoSleep(val);
         return;
@@ -145,11 +179,27 @@ private:
     bool m_sleep = false;
 
     uint8_t m_calibrationpacketcount = 0;
+
+    #ifdef ENABLE_EXTERNAL_CCP
+    CPPCalibrationData m_calibrationdata {0x800, 0x800, 1.0f, 1.0f};
+    #else
     CPPCalibrationData m_calibrationdata {};
+    #endif
 
     uint32_t m_latestkeys = 0;
+
+    #ifdef ENABLE_EXTERNAL_CCP
+    CirclePadEntry m_latestentry {0x800, 0x800};
+    #else
     CirclePadEntry m_latestentry {};
+    #endif
+
     CirclePadEntry m_latestentryraw {};
+
+    #ifdef ENABLE_EXTERNAL_CCP
+    LightLock m_externalinputlock;
+    bool m_externalinputenabled = false;
+    #endif
 
     uint32_t m_oldkeys = 0;
     CPPEntry m_cppstate {};

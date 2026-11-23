@@ -1,4 +1,9 @@
 #include "Pad.hpp"
+#include <atomic>
+
+std::atomic<uint32_t> diag_pad_raw_seen {0};
+std::atomic<uint32_t> diag_pad_ring_seen {0};
+std::atomic<uint32_t> diag_pad_pressed_seen {0};
 extern "C" {
 #include "services/gpio.h"
 }
@@ -82,8 +87,25 @@ void Pad::Sampling(u32 rcpr, Remapper *remapper) {
 
     ++m_counter;
     ReadFromIO(&finalentry, &latest, &finalcirclepad, remapper);
+#ifdef TEST_EXTEND_PAD_PRESSES
+    // Expose each selected press edge for up to 16 samples while held.
+    constexpr uint32_t testButtons = KEY_A | KEY_B | KEY_X | KEY_Y |
+        KEY_DUP | KEY_DDOWN | KEY_DLEFT | KEY_DRIGHT;
+    static uint32_t recentPresses[16] {};
+    recentPresses[m_counter % 16] = finalentry.pressedpadstate & testButtons;
+    uint32_t extendedPresses = 0;
+    for (uint32_t presses : recentPresses)
+        extendedPresses |= presses;
+    finalentry.pressedpadstate |= extendedPresses & finalentry.currpadstate;
+#endif
     m_ring->SetCurrPadState(latest, rawcirclepad);
     m_ring->Set3dSliderVal(sliderval);
     m_ring->WriteToRing(&finalentry, &finalcirclepad);
+    if (latest)
+        diag_pad_raw_seen.fetch_or(latest, std::memory_order_relaxed);
+    if (finalentry.currpadstate)
+        diag_pad_ring_seen.fetch_or(finalentry.currpadstate, std::memory_order_relaxed);
+    if (finalentry.pressedpadstate)
+        diag_pad_pressed_seen.fetch_or(finalentry.pressedpadstate, std::memory_order_relaxed);
     svcSignalEvent(m_event);
 }

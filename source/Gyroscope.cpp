@@ -1,4 +1,10 @@
 #include "Gyroscope.hpp"
+#include <atomic>
+
+std::atomic<uint32_t> diag_gyro_received {0};
+std::atomic<uint32_t> diag_gyro_moving {0};
+std::atomic<uint32_t> diag_gyro_remote_written {0};
+std::atomic<uint32_t> diag_gyro_local_written {0};
 #include "services/mcuhid.hpp"
 extern "C" {
 #include "services/gpio.h"
@@ -158,10 +164,38 @@ void Gyroscope::Initialize() {
     }
 }
 
+void Gyroscope::SetRemoteSample(GyroscopeEntry sample) {
+    LightLock_Lock(&m_remoteLock);
+    m_remoteSample = sample;
+    m_remoteTime = osGetTime();
+    LightLock_Unlock(&m_remoteLock);
+    diag_gyro_received.fetch_add(1, std::memory_order_relaxed);
+    if (sample.x || sample.y || sample.z)
+        diag_gyro_moving.fetch_add(1, std::memory_order_relaxed);
+}
+
 void Gyroscope::Sampling() {
     GyroscopeEntry rawvals;
     GyroscopeEntry fixedvals;
-    ReadGyroData(&rawvals);
+    LightLock_Lock(&m_remoteLock);
+    const bool remote = m_remoteTime != 0 && osGetTime() - m_remoteTime <= 250;
+    const GyroscopeEntry motion = m_remoteSample;
+    LightLock_Unlock(&m_remoteLock);
+
+    if (remote) {
+        const auto saturate = [](int value) -> int16_t {
+            if (value < -32767) return -32767;
+            if (value > 32767) return 32767;
+            return value;
+        };
+        // Remote axes are in the published HID orientation. Restore the
+        // physical sensor orientation and its configured zero offsets.
+        rawvals.x = saturate(m_calibparam.zeroX + motion.x);
+        rawvals.y = saturate(m_calibparam.zeroY + motion.z);
+        rawvals.z = saturate(m_calibparam.zeroZ - motion.y);
+    } else {
+        ReadGyroData(&rawvals);
+    }
     fixedvals.x = rawvals.x;
 
     if (rawvals.z == -32768)
@@ -172,6 +206,8 @@ void Gyroscope::Sampling() {
 
     m_ring->SetRaw(rawvals);
     m_ring->WriteToRing(fixedvals);
+    auto &written = remote ? diag_gyro_remote_written : diag_gyro_local_written;
+    written.fetch_add(1, std::memory_order_relaxed);
 
     for (int i = 0; i < 6; i++)
         svcSignalEvent(m_event[i]);

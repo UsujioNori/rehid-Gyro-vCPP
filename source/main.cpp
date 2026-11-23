@@ -5,6 +5,7 @@
 #include "services/irrst.hpp"
 #include <cstdio>
 #include <cstring>
+#include <atomic>
 extern "C" {
 #include "csvc.h"
 #include "services.h"
@@ -14,6 +15,211 @@ extern "C" {
 #define OS_REMOTE_SESSION_CLOSED MAKERESULT(RL_STATUS,    RS_CANCELED, RM_OS, 26)
 #define OS_INVALID_HEADER        MAKERESULT(RL_PERMANENT, RS_WRONGARG, RM_OS, 47)
 #define OS_INVALID_IPC_PARAMATER MAKERESULT(RL_PERMANENT, RS_WRONGARG, RM_OS, 48)
+
+extern volatile uint32_t diag_ir_require_commands;
+extern volatile uint32_t diag_ir_disconnect_commands;
+extern volatile uint32_t diag_ir_disconnect_successes;
+extern volatile uint32_t diag_ir_disconnect_redundant;
+extern volatile uint32_t diag_ir_disconnect_queue_last;
+extern volatile uint32_t diag_ir_disconnect_queue_max;
+extern volatile uint32_t diag_ir_input_requests;
+extern volatile uint32_t diag_ir_first_input_requests;
+extern volatile uint32_t diag_ir_subsequent_input_requests;
+
+static volatile uint32_t diag_sleep_entries = 0;
+static volatile uint32_t diag_sleep_exits = 0;
+static volatile uint32_t diag_home_presses = 0;
+
+extern volatile uint32_t diag_pad_wakeups;
+extern volatile uint32_t diag_pad_successes;
+extern volatile uint32_t diag_pad_failures;
+extern volatile Result diag_last_pad_result;
+extern std::atomic<uint32_t> diag_accel_remote_written;
+extern std::atomic<uint32_t> diag_gyro_received;
+extern std::atomic<uint32_t> diag_gyro_moving;
+extern std::atomic<uint32_t> diag_gyro_remote_written;
+extern std::atomic<uint32_t> diag_gyro_local_written;
+extern std::atomic<uint32_t> diag_pad_raw_seen;
+extern std::atomic<uint32_t> diag_pad_ring_seen;
+extern std::atomic<uint32_t> diag_pad_pressed_seen;
+
+#ifdef ENABLE_EXTERNAL_CCP
+extern uint32_t diag_cpp_ipc_packets;
+extern uint32_t diag_cpp_ipc_active_packets;
+extern uint32_t diag_cpp_ipc_last_active;
+extern uint32_t diag_cpp_report_stick;
+extern uint32_t diag_cpp_report_zl;
+extern uint32_t diag_cpp_report_zr;
+extern uint32_t diag_cpp_report_last_stick;
+extern uint32_t diag_cpp_queue_rejections;
+extern uint64_t diag_cpp_batch_last_tick;
+extern uint64_t diag_cpp_batch_ticks[4];
+extern uint32_t diag_cpp_batch_next;
+#endif
+
+static void LogNotificationDiagnostics(uint32_t notid) {
+    const bool home = notid == 0x204;
+    const uint32_t padRaw = home ? diag_pad_raw_seen.exchange(0, std::memory_order_relaxed) : 0;
+    const uint32_t padRing = home ? diag_pad_ring_seen.exchange(0, std::memory_order_relaxed) : 0;
+    const uint32_t padPressed = home ? diag_pad_pressed_seen.exchange(0, std::memory_order_relaxed) : 0;
+#ifdef ENABLE_EXTERNAL_CCP
+    const uint64_t notification_tick = svcGetSystemTick();
+#endif
+    Handle file;
+    u32 written = 0;
+    u64 offset = 0;
+
+    static const char path[] = "/rehid_notification_debug.txt";
+
+    FS_Path emptyPath = fsMakePath(PATH_EMPTY, NULL);
+    FS_Path filePath = fsMakePath(PATH_ASCII, path);
+
+    Result ret = FSUSER_OpenFileDirectly(
+        &file, ARCHIVE_SDMC, emptyPath, filePath, FS_OPEN_WRITE, 0
+    );
+
+    if (R_FAILED(ret)) {
+        ret = FSUSER_OpenFileDirectly(
+            &file, ARCHIVE_SDMC, emptyPath, filePath,
+            FS_OPEN_WRITE | FS_OPEN_CREATE, 0
+        );
+    }
+
+    if (R_FAILED(ret))
+        return;
+
+    ret = FSFILE_GetSize(file, &offset);
+
+    if (R_SUCCEEDED(ret)) {
+        char line[1024];
+
+        int len = snprintf(
+            line, sizeof(line),
+            "Notification=%03lX sleep_in=%lu sleep_out=%lu home=%lu ir_require=%lu ir_disconnect=%lu disconnect_ok=%lu disconnect_redundant=%lu disconnect_queue_last=%lu disconnect_queue_max=%lu input_requests=%lu input_first=%lu input_subsequent=%lu pad_wakeups=%lu pad_successes=%lu pad_failures=%lu pad_last_result=%08lX\n",
+            (unsigned long)notid,
+            (unsigned long)diag_sleep_entries,
+            (unsigned long)diag_sleep_exits,
+            (unsigned long)diag_home_presses,
+            (unsigned long)diag_ir_require_commands,
+            (unsigned long)diag_ir_disconnect_commands,
+            (unsigned long)diag_ir_disconnect_successes,
+            (unsigned long)diag_ir_disconnect_redundant,
+            (unsigned long)diag_ir_disconnect_queue_last,
+            (unsigned long)diag_ir_disconnect_queue_max,
+            (unsigned long)diag_ir_input_requests,
+            (unsigned long)diag_ir_first_input_requests,
+            (unsigned long)diag_ir_subsequent_input_requests,
+            (unsigned long)diag_pad_wakeups,
+            (unsigned long)diag_pad_successes,
+            (unsigned long)diag_pad_failures,
+            (unsigned long)diag_last_pad_result
+        );
+
+#ifdef ENABLE_EXTERNAL_CCP
+        if (len > 0 && len < (int)sizeof(line)) {
+            len += snprintf(
+                line + len, sizeof(line) - len,
+                "CPP IPC packets=%lu active=%lu last_active=%08lX\n",
+                (unsigned long)diag_cpp_ipc_packets,
+                (unsigned long)diag_cpp_ipc_active_packets,
+                (unsigned long)diag_cpp_ipc_last_active
+            );
+        }
+        if (len > 0 && len < (int)sizeof(line)) {
+            len += snprintf(
+                line + len, sizeof(line) - len,
+                "CPP reports stick=%lu zl=%lu zr=%lu last_stick=%08lX\n",
+                (unsigned long)diag_cpp_report_stick,
+                (unsigned long)diag_cpp_report_zl,
+                (unsigned long)diag_cpp_report_zr,
+                (unsigned long)diag_cpp_report_last_stick
+            );
+        }
+        if (len > 0 && len < (int)sizeof(line)) {
+            const uint32_t next = diag_cpp_batch_next;
+            len += snprintf(
+                line + len, sizeof(line) - len,
+                "CPP timing queue_rejections=%lu batch256_ticks=%llu,%llu,%llu,%llu tail_ticks=%llu tail_reports=%lu\n",
+                (unsigned long)diag_cpp_queue_rejections,
+                (unsigned long long)diag_cpp_batch_ticks[(next + 3) & 3],
+                (unsigned long long)diag_cpp_batch_ticks[(next + 2) & 3],
+                (unsigned long long)diag_cpp_batch_ticks[(next + 1) & 3],
+                (unsigned long long)diag_cpp_batch_ticks[next],
+                (unsigned long long)(diag_cpp_batch_last_tick != 0
+                    ? notification_tick - diag_cpp_batch_last_tick : 0),
+                (unsigned long)(diag_ir_input_requests & 255)
+            );
+        }
+#endif
+
+        if (home && len > 0 && len < (int)sizeof(line)) {
+            len += snprintf(
+                line + len, sizeof(line) - len,
+                "PAD trace raw=%08lX ring=%08lX pressed=%08lX\n",
+                (unsigned long)padRaw, (unsigned long)padRing, (unsigned long)padPressed
+            );
+        }
+
+        if (home && len > 0 && len < (int)sizeof(line)) {
+            len += snprintf(line + len, sizeof(line) - len,
+                "GYRO trace received=%lu nonzero=%lu remote_written=%lu local_written=%lu accel_written=%lu\n",
+                (unsigned long)diag_gyro_received.load(std::memory_order_relaxed),
+                (unsigned long)diag_gyro_moving.load(std::memory_order_relaxed),
+                (unsigned long)diag_gyro_remote_written.load(std::memory_order_relaxed),
+                (unsigned long)diag_gyro_local_written.load(std::memory_order_relaxed),
+                (unsigned long)diag_accel_remote_written.load(std::memory_order_relaxed));
+        }
+
+        if (len > 0 && len < (int)sizeof(line)) {
+            Result write_result = FSFILE_Write(
+                file, &written, offset, line, (u32)len, FS_WRITE_FLUSH
+            );
+
+            if (R_SUCCEEDED(write_result))
+                offset += written;
+        }
+
+        uint32_t history_count = diag_ir_command_history_count;
+        uint32_t history_next = diag_ir_command_history_next;
+        uint32_t history_start = (history_next + 16 - history_count) & 15;
+
+        for (uint32_t i = 0; i < history_count; i++) {
+            uint32_t slot = (history_start + i) & 15;
+
+            uint64_t tick = diag_ir_command_history[slot].tick;
+            uint32_t command = diag_ir_command_history[slot].command;
+            uint32_t detail = diag_ir_command_history[slot].detail;
+            uint32_t result = diag_ir_command_history[slot].result;
+
+            char history_line[112];
+
+            int history_len = snprintf(
+                history_line, sizeof(history_line),
+                "IR tick=%llu cmd=%02lX detail=%08lX result=%08lX\n",
+                (unsigned long long)tick,
+                (unsigned long)command,
+                (unsigned long)detail,
+                (unsigned long)result
+            );
+
+            if (history_len <= 0 || history_len >= (int)sizeof(history_line))
+                continue;
+
+            written = 0;
+            Result history_write_result = FSFILE_Write(
+                file, &written, offset, history_line,
+                (u32)history_len, FS_WRITE_FLUSH
+            );
+
+            if (R_FAILED(history_write_result))
+                break;
+
+            offset += written;
+        }
+    }
+
+    FSFILE_Close(file);
+}
 
 static Result HandleNotifications(Hid *hid, int *exit) {
     uint32_t notid = 0;
@@ -29,12 +235,16 @@ static Result HandleNotifications(Hid *hid, int *exit) {
         }
 
         case 0x104: { // Entering SleepMode
+            diag_sleep_entries++;
             hid->EnteringSleepMode();
+            LogNotificationDiagnostics(notid);
             break;
         }
 
         case 0x105: { // Exiting SleepMode
+            diag_sleep_exits++;
             hid->ExitingSleepMode();
+            LogNotificationDiagnostics(notid);
             break;
         }
 
@@ -43,6 +253,8 @@ static Result HandleNotifications(Hid *hid, int *exit) {
         }
 
         case 0x204: { // Home button pressed
+            diag_home_presses++;
+            LogNotificationDiagnostics(notid);
             break;
         }
 

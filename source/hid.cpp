@@ -4,6 +4,7 @@
 #include <cstring>
 #include "services/irrst.hpp"
 #include "code_ips.h"
+#include <cstdio>
 extern "C"
 {
 #include "csvc.h"
@@ -103,6 +104,12 @@ void Hid::InitializeIR() {
     srvSetBlockingPolicy(false);
 }
 
+static volatile uint32_t diag_ir_wakeups = 0;
+volatile uint32_t diag_pad_wakeups = 0;
+volatile uint32_t diag_pad_successes = 0;
+volatile uint32_t diag_pad_failures = 0;
+volatile Result diag_last_pad_result = 0;
+
 static void SamplingFunction(void *argv) {
     Hid *hid = (Hid*)argv;
     Result ret = 0;
@@ -131,16 +138,26 @@ static void SamplingFunction(void *argv) {
         switch (out) {
 
             case 0: {
+                diag_ir_wakeups++;
                 hid->GetIR()->Sampling();
                 break;
             }
 
             case 1: {
+                diag_pad_wakeups++;
+
                 ret = CDCHID_GetData(&touchscreendata, &circlepaddata);
 
                 if (ret == 0) {
+                    diag_pad_successes++;
+
                     hid->GetPad()->Sampling(circlepaddata, hid->GetRemapperObject());
                     hid->GetTouch()->Sampling(touchscreendata, hid->GetRemapperObject());
+                } else {
+                    diag_pad_failures++;
+                    diag_last_pad_result = ret;
+                    // A failed read skips Pad::Sampling, which rearms this timer.
+                    hid->GetPad()->SetTimer();
                 }
 
                 break;
