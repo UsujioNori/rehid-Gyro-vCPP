@@ -45,8 +45,11 @@ void Pad::ReadFromIO(PadEntry *entry, uint32_t *raw, CirclePadEntry *circlepad, 
 
 #endif
 
-    m_ir->ScanInput(remapper);
-    CPPEntry cppentry = m_ir->GetInputs();
+    CPPEntry cppentry {};
+    if (m_ir) {
+        m_ir->ScanInput(remapper);
+        cppentry = m_ir->GetInputs();
+    }
     uint32_t additionalcpad = CirclePad::ConvertToHidButtons<CirclePadMode::CPAD>(circlepad, latest); // if need be this also sets the circlepad entry to 0
 
     latest = latest | cppentry.currpadstate | remapper->m_remaptouchkeys | additionalcpad;

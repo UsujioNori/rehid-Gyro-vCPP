@@ -20,12 +20,8 @@ public:
 
     Hid() {
         int64_t out = 0;
-        uint8_t isn3ds = svcGetSystemInfo(&out, 0x10001, 0) == 0;
-
-        if (isn3ds)
-            m_ir = &m_cppn3ds;
-        else
-            m_ir = &m_cppo3ds;
+        const bool isNewModel = svcGetSystemInfo(&out, 0x10001, 0) == 0;
+        m_ir = isNewModel ? nullptr : &m_cppo3ds;
     }
 
     void CreateAndMapMemoryBlock();
@@ -61,6 +57,9 @@ public:
     DebugPad *GetDebugPad() {
         return &m_debugpad;
     };
+
+    bool UsesNativeIR() const { return m_ir == nullptr; }
+    Handle GetRemoteGyroEvent() const { return m_remoteGyroEvent; }
 
     IR *GetIR() {
         return m_ir;
@@ -102,9 +101,9 @@ private:
     Accelerometer m_accel;
     Gyroscope m_gyro;
     DebugPad m_debugpad;
+    Handle m_remoteGyroEvent = 0;
     IR *m_ir;
     CPPO3DS m_cppo3ds;
-    CPPN3DS m_cppn3ds;
     bool m_shellisopen = true;
     MyThread m_samplingthread;
     bool m_samplingthreadstarted = false;

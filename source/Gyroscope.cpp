@@ -174,7 +174,7 @@ void Gyroscope::SetRemoteSample(GyroscopeEntry sample) {
         diag_gyro_moving.fetch_add(1, std::memory_order_relaxed);
 }
 
-void Gyroscope::Sampling() {
+void Gyroscope::Sampling(SampleSource source) {
     GyroscopeEntry rawvals;
     GyroscopeEntry fixedvals;
     LightLock_Lock(&m_remoteLock);
@@ -182,7 +182,15 @@ void Gyroscope::Sampling() {
     const GyroscopeEntry motion = m_remoteSample;
     LightLock_Unlock(&m_remoteLock);
 
-    if (remote) {
+    if (source == SampleSource::RemoteEvent && !remote)
+        return;
+
+    if (source == SampleSource::PhysicalInterrupt) {
+        // Read the hardware even when the remote event owns ring writes.
+        ReadGyroData(&rawvals);
+        if (remote)
+            return;
+    } else if (remote) {
         const auto saturate = [](int value) -> int16_t {
             if (value < -32767) return -32767;
             if (value > 32767) return 32767;

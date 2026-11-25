@@ -205,7 +205,7 @@ void HandleHidCommands(Hid *hid) {
 
         case 0x19: {
             #ifdef ENABLE_EXTERNAL_CCP
-            if (((cmdbuf[0] >> 6) & 0x3F) >= 1) {
+            if (!hid->UsesNativeIR() && ((cmdbuf[0] >> 6) & 0x3F) >= 1) {
                 const uint32_t input = cmdbuf[1];
                 hid->GetCPPO3DSObject()->SetExternalInput(input);
                 ++diag_cpp_ipc_packets;
@@ -223,6 +223,8 @@ void HandleHidCommands(Hid *hid) {
                 hid->GetGyroscope()->SetRemoteSample({
                     unpack(cmdbuf[2]), unpack(cmdbuf[2] >> 16), unpack(cmdbuf[3])
                 });
+                if (hid->UsesNativeIR())
+                    svcSignalEvent(hid->GetRemoteGyroEvent());
                 if (cmdbuf[0] == 0x190140) {
                     hid->GetAccelerometer()->SetRemoteSample({
                         unpack(cmdbuf[4]), unpack(cmdbuf[4] >> 16), unpack(cmdbuf[5])

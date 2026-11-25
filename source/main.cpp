@@ -351,7 +351,8 @@ int main() {
 
     const char *srvnames[] = {"", "hid:SPVR", "hid:USER", "hid:QTM", "hid:NFC", "ir:USER"};
 
-    hid.CheckIfIRPatchExists();
+    if (!hid.UsesNativeIR())
+        hid.CheckIfIRPatchExists();
     hid.CreateAndMapMemoryBlock();
     hid.CreateRingsOnSharedmemoryBlock();
     hid.InitializePad();
@@ -360,13 +361,14 @@ int main() {
     hid.InitializeDebugPad();
     hid.StartThreadsForSampling();
 
-    const s32 SERVICECOUNT = 5;
+    constexpr s32 MAX_SERVICE_COUNT = 5;
+    const s32 SERVICECOUNT = hid.UsesNativeIR() ? 4 : MAX_SERVICE_COUNT;
     const s32 INDEXMAX = SERVICECOUNT * 7 + 1;
     const s32 REMOTESESSIONINDEX = SERVICECOUNT + 1;
 
-    Handle sessionhandles[INDEXMAX];
+    Handle sessionhandles[MAX_SERVICE_COUNT * 7 + 1];
 
-    u32 serviceindexes[7 * SERVICECOUNT];
+    u32 serviceindexes[MAX_SERVICE_COUNT * 7];
 
     s32 handlecount = SERVICECOUNT + 1;
 

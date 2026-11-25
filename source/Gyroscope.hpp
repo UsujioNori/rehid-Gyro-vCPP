@@ -34,7 +34,8 @@ public:
     Gyroscope() { LightLock_Init(&m_remoteLock); }
     void SetRemoteSample(GyroscopeEntry sample);
     void Initialize();
-    void Sampling();
+    enum class SampleSource { Automatic, RemoteEvent, PhysicalInterrupt };
+    void Sampling(SampleSource source = SampleSource::Automatic);
     void SetGyroscopeRing(GyroscopeRing *ring) {
         m_ring = ring;
     };

@@ -39,6 +39,8 @@ void Hid::CreateAndMapMemoryBlock() {
 
     svcCreateEvent(&dummyhandles[2], RESET_STICKY);
     svcCreateEvent(&dummyhandles[3], RESET_ONESHOT);
+    if (UsesNativeIR() && R_FAILED(svcCreateEvent(&m_remoteGyroEvent, RESET_ONESHOT)))
+        svcBreak(USERBREAK_ASSERT);
     LightLock_Init(&m_sleeplock);
 }
 
@@ -91,7 +93,10 @@ static inline bool isServiceUsable(const char *name) {
 }
 
 void Hid::InitializeIR() {
-    svcCreateEvent(&dummyhandles[0], RESET_STICKY);
+    if (UsesNativeIR())
+        return;
+    if (R_FAILED(svcCreateEvent(&dummyhandles[0], RESET_STICKY)))
+        svcBreak(USERBREAK_ASSERT);
 
     /* if one service is usable, then so should the others */
     while (!isServiceUsable("ir:u"))
@@ -118,15 +123,17 @@ static void SamplingFunction(void *argv) {
     Handle *accelintrevent = hid->GetAccelerometer()->GetIntrEvent();
     Handle *gyrointrevent = hid->GetGyroscope()->GetIntrEvent();
     Handle *debugpadtimer = hid->GetDebugPad()->GetTimer();
-    Handle *irtimer = hid->GetIR()->GetTimer();
     LightLock *lock = hid->GetSleepLock();
 
     hid->InitializeIR();
+    IR *ir = hid->GetIR();
+    Handle remoteGyroEvent = hid->GetRemoteGyroEvent();
+    Handle *irOrGyroEvent = ir ? ir->GetTimer() : &remoteGyroEvent;
 
     int32_t out;
 
     while (!*hid->ExitThread()) {
-        Handle handles[] = {*irtimer, *padtimer, *debugpadtimer, *gyrointrevent, *accelintrevent};
+        Handle handles[] = {*irOrGyroEvent, *padtimer, *debugpadtimer, *gyrointrevent, *accelintrevent};
         LightLock_Lock(lock);
         ret = svcWaitSynchronizationN(&out, handles, 5, false, -1LL);
 
@@ -138,8 +145,12 @@ static void SamplingFunction(void *argv) {
         switch (out) {
 
             case 0: {
-                diag_ir_wakeups++;
-                hid->GetIR()->Sampling();
+                if (ir) {
+                    diag_ir_wakeups++;
+                    ir->Sampling();
+                } else {
+                    hid->GetGyroscope()->Sampling(Gyroscope::SampleSource::RemoteEvent);
+                }
                 break;
             }
 
@@ -169,7 +180,8 @@ static void SamplingFunction(void *argv) {
             }
 
             case 3: {
-                hid->GetGyroscope()->Sampling();
+                hid->GetGyroscope()->Sampling(ir ? Gyroscope::SampleSource::Automatic
+                                                  : Gyroscope::SampleSource::PhysicalInterrupt);
                 break;
             }
 
@@ -194,7 +206,8 @@ void Hid::StartThreadsForSampling() {
         m_gyroring->Reset();
         m_debugpadring->Reset();
         m_pad.SetTimer();
-        m_ir->SetTimer();
+        if (m_ir)
+            m_ir->SetTimer();
         m_debugpad.SetTimer();
         m_accel.EnableOrDisableInterrupt();
         m_gyro.EnableSampling();
@@ -210,7 +223,8 @@ void Hid::StartThreadsForSampling() {
 void Hid::EnteringSleepMode() {
     LightLock_Lock(&m_sleeplock); // now that main thread accquired the lock, sampling thread will get stuck
     svcClearEvent(dummyhandles[2]);
-    m_ir->SetEnteringSleep(1);
+    if (m_ir)
+        m_ir->SetEnteringSleep(1);
     PTMSYSM_NotifySleepPreparationComplete(0);
 }
 
@@ -224,8 +238,10 @@ void Hid::ExitingSleepMode() {
     m_debugpadring->Reset();
     m_pad.SetTimer();
     m_debugpad.SetTimer();
-    m_ir->SetEnteringSleep(0);
-    m_ir->SetTimer();
+    if (m_ir) {
+        m_ir->SetEnteringSleep(0);
+        m_ir->SetTimer();
+    }
 
     PTMSYSM_NotifySleepPreparationComplete(0);
 }
